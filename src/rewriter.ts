@@ -3,6 +3,43 @@ import { parse, type Program } from "@aliou/sh";
 import type { BashSpawnContext } from "@earendil-works/pi-coding-agent";
 import type { RewriterConfig } from "./config";
 
+// ---------------------------------------------------------------------------
+// Types (aligned with pi-toolchain's Rewriter / RewriteNotice pattern)
+// ---------------------------------------------------------------------------
+
+export interface RewriteNotice {
+	message: string;
+}
+
+export interface RewriteResult {
+	ctx: BashSpawnContext;
+	notices: RewriteNotice[];
+}
+
+// ---------------------------------------------------------------------------
+// AST helpers
+// ---------------------------------------------------------------------------
+
+interface SimpleCommandNode {
+	type: "SimpleCommand";
+	words?: WordNode[];
+}
+
+interface WordNode {
+	parts: PartNode[];
+}
+
+interface PartNode {
+	type: string;
+	value?: string;
+}
+
+interface Replacement {
+	start: number;
+	end: number;
+	text: string;
+}
+
 /** Walk AST, collect all SimpleCommand nodes */
 function walkSimpleCommands(node: unknown, depth: number): SimpleCommandNode[] {
 	if (!node || typeof node !== "object") return [];
@@ -23,20 +60,6 @@ function walkSimpleCommands(node: unknown, depth: number): SimpleCommandNode[] {
 		}
 	}
 	return results;
-}
-
-interface SimpleCommandNode {
-	type: "SimpleCommand";
-	words?: WordNode[];
-}
-
-interface WordNode {
-	parts: PartNode[];
-}
-
-interface PartNode {
-	type: string;
-	value?: string;
 }
 
 /** Get first word as plain string (only if single Literal part) */
@@ -65,38 +88,70 @@ function findCommandPosition(
 			idx + name.length < source.length ? source[idx + name.length] : undefined;
 
 		// Word boundary: reject if adjacent char is alphanumeric or underscore.
-		// Catches cases like "my_python" or "python3.11" matching "python".
 		const validBefore = before === undefined || !/[a-zA-Z0-9_]/.test(before);
 		const validAfter = after === undefined || !/[a-zA-Z0-9_]/.test(after);
 
 		if (validBefore && validAfter) return idx;
-
 		pos = idx + 1;
 	}
 	return -1;
 }
 
-interface Replacement {
-	start: number;
-	end: number;
-	text: string;
+// ---------------------------------------------------------------------------
+// RTK integration
+// ---------------------------------------------------------------------------
+
+/** Run `rtk rewrite` on a command if rtkMode is enabled. */
+function applyRtk(config: RewriterConfig, command: string): string {
+	if (config.rtkMode !== "after-rewrite") return command;
+	if (command.includes("\0") || command.length > 10_000) return command;
+	try {
+		const result = spawnSync("rtk", ["rewrite", command], {
+			encoding: "utf-8",
+			timeout: 5_000,
+		});
+		// exit 0 = rewritten + auto-allow, exit 3 = rewritten + ask
+		if ((result.status === 0 || result.status === 3) && result.stdout) {
+			return result.stdout.trim();
+		}
+	} catch {
+		// rtk not installed or failed — pass through unchanged
+	}
+	return command;
 }
 
-/** Build spawn hook from config */
-export function createSpawnHook(config: RewriterConfig) {
-	return (ctx: BashSpawnContext): BashSpawnContext => {
-		if (!config.enabled) return ctx;
+// ---------------------------------------------------------------------------
+// Core: analyzeRewrite
+// ---------------------------------------------------------------------------
 
-		const activeRules = (config.rewrites ?? []).filter((r) => r.enabled);
-		if (activeRules.length === 0)
-			return { ...ctx, command: applyRtk(config, ctx.command) };
+/**
+ * Apply local rewrite rules (and optionally RTK) to a BashSpawnContext.
+ * Returns the (possibly rewritten) context and any notices for UI display.
+ * Pure function — no side effects.
+ */
+export function analyzeRewrite(
+	ctx: BashSpawnContext,
+	config: RewriterConfig,
+): RewriteResult {
+	if (!config.enabled) return { ctx, notices: [] };
 
+	const activeRules = (config.rewrites ?? []).filter((r) => r.enabled);
+
+	// Apply local rules first
+	let command = ctx.command;
+
+	if (activeRules.length > 0) {
 		let ast: Program;
 		try {
-			({ ast } = parse(ctx.command));
+			({ ast } = parse(command));
 		} catch {
-			// Parse fail = pass through, but still try RTK
-			return { ...ctx, command: applyRtk(config, ctx.command) };
+			// Parse fail — skip local rules, still try RTK below
+			const rtkCommand = applyRtk(config, command);
+			const notices: RewriteNotice[] =
+				rtkCommand !== command
+					? [{ message: `${command}  →  ${rtkCommand}` }]
+					: [];
+			return { ctx: { ...ctx, command: rtkCommand }, notices };
 		}
 
 		const commands = walkSimpleCommands(ast, 0);
@@ -106,62 +161,49 @@ export function createSpawnHook(config: RewriterConfig) {
 			const name = getCommandName(cmd);
 			if (!name) continue;
 
-			// Find matching rule
 			const rule = activeRules.find((r) => {
 				const matches = Array.isArray(r.match) ? r.match : [r.match];
 				return matches.includes(name);
 			});
 			if (!rule) continue;
 
-			// Find position in source (search from 0; dedup below prevents double-replace).
-			const idx = findCommandPosition(ctx.command, name, 0);
+			const idx = findCommandPosition(command, name, 0);
 			if (idx === -1) continue;
 
-			// Skip if this position is already covered by a prior replacement.
 			if (replacements.some((r) => idx >= r.start && idx < r.end)) continue;
 
-			// Build replacement text
 			const replacement = rule.replaceWith.replace("$0", name);
-			replacements.push({
-				start: idx,
-				end: idx + name.length,
-				text: replacement,
-			});
+			replacements.push({ start: idx, end: idx + name.length, text: replacement });
 		}
 
-		if (replacements.length === 0)
-			return { ...ctx, command: applyRtk(config, ctx.command) };
-
-		// Sort left-to-right, then apply right-to-left to keep offsets valid.
-		replacements.sort((a, b) => a.start - b.start);
-		let result = ctx.command;
-		for (let i = replacements.length - 1; i >= 0; i--) {
-			const r = replacements[i];
-			result = result.slice(0, r.start) + r.text + result.slice(r.end);
+		if (replacements.length > 0) {
+			replacements.sort((a, b) => a.start - b.start);
+			for (let i = replacements.length - 1; i >= 0; i--) {
+				const r = replacements[i];
+				command =
+					command.slice(0, r.start) + r.text + command.slice(r.end);
+			}
 		}
+	}
 
-		return { ...ctx, command: applyRtk(config, result) };
-	};
+	// Apply RTK on top of local rewrites
+	const rtkCommand = applyRtk(config, command);
+	const finalCommand = rtkCommand;
+
+	const notices: RewriteNotice[] =
+		finalCommand !== ctx.command
+			? [{ message: `${ctx.command}  →  ${finalCommand}` }]
+			: [];
+
+	return { ctx: { ...ctx, command: finalCommand }, notices };
 }
 
-/** Run `rtk rewrite` on a command if rtkMode is enabled. Returns the rewritten
- *  command on success (exit 0 or 3), or the original if RTK has no equivalent
- *  (exit 1) or is not installed. */
-function applyRtk(config: RewriterConfig, command: string): string {
-	if (config.rtkMode !== "after-rewrite") return command;
-	// Reject commands with null bytes or excessive length (defense-in-depth).
-	if (command.includes("\0") || command.length > 10_000) return command;
-	try {
-		const result = spawnSync("rtk", ["rewrite", command], {
-			encoding: "utf-8",
-			timeout: 5_000, // Kill hung RTK after 5s
-		});
-		// exit 0 = rewritten + auto-allow, exit 3 = rewritten + ask — both mean use stdout
-		if ((result.status === 0 || result.status === 3) && result.stdout) {
-			return result.stdout.trim();
-		}
-	} catch {
-		// rtk not installed or failed — pass through unchanged
-	}
-	return command;
+// ---------------------------------------------------------------------------
+// Spawn hook factory
+// ---------------------------------------------------------------------------
+
+/** Build a BashSpawnHook from config. */
+export function createSpawnHook(config: RewriterConfig) {
+	return (ctx: BashSpawnContext): BashSpawnContext =>
+		analyzeRewrite(ctx, config).ctx;
 }
