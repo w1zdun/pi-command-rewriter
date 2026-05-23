@@ -97,3 +97,7 @@ If `rtk` is not installed or doesn't know the command, it passes through unchang
 
 - `/rewriter-status` — show active rules in widget
 - `/rewriter-reload` — reload config without restarting Pi
+
+## Credits
+
+- **[pi-toolchain](https://github.com/aliou/pi-toolchain)** — inspiration for the extension concept and AST-based command search approach.
