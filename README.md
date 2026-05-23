@@ -6,17 +6,17 @@ Pi extension. AST-based bash command rewriter. Configurable rules per project or
 
 ```bash
 # Global install via pi
-pi install git:github.com/<you>/pi-rewrite
+pi install git:github.com/w1zdun/pi-command-rewriter
 
 # Project-local install
-pi install git:github.com/<you>/pi-rewrite -l
+pi install git:github.com/w1zdun/pi-command-rewriter -l
 ```
 
 Or manually:
 
 ```bash
 # Symlink from a local clone
-ln -s $(pwd)/pi-rewrite ~/.pi/agent/extensions/command-rewriter
+ln -s $(pwd)/pi-command-rewriter ~/.pi/agent/extensions/command-rewriter
 ```
 
 ## Config
