@@ -3,8 +3,8 @@ import { createBashTool } from "@earendil-works/pi-coding-agent";
 import { loadConfig, type RewriterConfig } from "./config";
 import { createSpawnHook } from "./rewriter";
 
-// Mutable config holder — spawn hook reads current value each invocation.
-let currentConfig: RewriterConfig | undefined;
+// Mutable config holder — always assigned before any handler runs.
+let currentConfig: RewriterConfig;
 
 export default async function (pi: ExtensionAPI) {
 	currentConfig = loadConfig(process.cwd());
@@ -28,12 +28,14 @@ export default async function (pi: ExtensionAPI) {
 		description: "Show active rewriter rules",
 		handler: async (_args, ctx) => {
 			const cfg = currentConfig;
+			const rtkStatus = (cfg.rtkMode ?? "disabled") === "after-rewrite" ? "✅ after-rewrite" : "❌ disabled";
 			const lines = (cfg.rewrites ?? []).map((r, i) => {
 				const match = Array.isArray(r.match) ? r.match.join(" | ") : r.match;
 				const status = r.enabled ? "✅ ON " : "❌ OFF";
 				return `  [${i}] ${status} ${match} → ${r.replaceWith}`;
 			});
 			const text = [
+				`RTK: ${rtkStatus}`,
 				"Active rules:",
 				...lines,
 				`  Total: ${(cfg.rewrites ?? []).length}`,
