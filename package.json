@@ -2,6 +2,7 @@
   "name": "pi-command-rewriter",
   "version": "0.1.0",
   "description": "Pi extension - AST-based bash command rewriter with configurable rules",
+  "license": "MIT",
   "scripts": {},
   "dependencies": {
     "@aliou/sh": "github:w1zdun/sh"
