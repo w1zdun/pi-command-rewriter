@@ -1,10 +1,8 @@
-import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { join } from "node:path";
 
-/** Single rewrite rule: source command -> replacement prefix/command */
 export interface RewriteRule {
-	/** Enabled toggle */
 	enabled: boolean;
 	/** Command name(s) to match (e.g. "python", "python3") */
 	match: string | string[];
@@ -12,14 +10,10 @@ export interface RewriteRule {
 	replaceWith: string;
 }
 
-/** Full config shape */
 export interface RewriterConfig {
-	/** Global enable/disable */
 	enabled?: boolean;
-	/** Rewrite rules — order matters (first match wins per command position) */
 	rewrites?: RewriteRule[];
 	/**
-	 * RTK integration mode.
 	 * "after-rewrite": run `rtk rewrite` on the command after local rules are applied.
 	 * "disabled": skip RTK entirely (default).
 	 */
@@ -42,18 +36,25 @@ const DEFAULT_CONFIG: RewriterConfig = {
 	],
 };
 
-/** Load JSON config, return undefined on any error */
+/**
+ * Dedup key. Including replaceWith prevents two rules with the same match
+ * but different replacements from silently colliding.
+ */
+function ruleKey(rule: RewriteRule): string {
+	const match = Array.isArray(rule.match) ? rule.match.join("|") : rule.match;
+	return `${match}::${rule.replaceWith}`;
+}
+
 function loadJson(path: string): RewriterConfig | undefined {
 	try {
-		if (!existsSync(path)) return undefined;
 		return JSON.parse(readFileSync(path, "utf-8")) as RewriterConfig;
 	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
 		console.error(`command-rewriter: failed to load ${path}: ${err}`);
 		return undefined;
 	}
 }
 
-/** Merge configs: later overrides earlier (shallow per key) */
 function mergeConfigs(
 	...configs: (RewriterConfig | undefined)[]
 ): RewriterConfig {
@@ -64,36 +65,24 @@ function mergeConfigs(
 		if (cfg.enabled !== undefined) result.enabled = cfg.enabled;
 		if (cfg.rtkMode !== undefined) result.rtkMode = cfg.rtkMode;
 		if (cfg.rewrites) {
-			// Build a map by match::replaceWith for dedup, preserve order.
-			// Including replaceWith prevents two rules with the same match
-			// but different replacements from silently colliding.
 			const seen = new Set<string>();
 			const merged: RewriteRule[] = [];
 			for (const rule of cfg.rewrites) {
-				const key = `${Array.isArray(rule.match) ? rule.match.join("|") : rule.match}::${rule.replaceWith}`;
+				const key = ruleKey(rule);
 				if (!seen.has(key)) {
 					seen.add(key);
 					merged.push(rule);
 				}
 			}
-			// Remove old rules not in new config, add new ones
-			const oldRules = result.rewrites ?? [];
-			const oldMap = new Map<string, RewriteRule>();
-			for (const r of oldRules) {
-				const key = `${Array.isArray(r.match) ? r.match.join("|") : r.match}::${r.replaceWith}`;
-				oldMap.set(key, r);
-			}
-			for (const r of merged) {
-				const key = `${Array.isArray(r.match) ? r.match.join("|") : r.match}::${r.replaceWith}`;
-				oldMap.set(key, r);
-			}
-			result.rewrites = [...oldMap.values()];
+			const ruleMap = new Map<string, RewriteRule>();
+			for (const r of result.rewrites ?? []) ruleMap.set(ruleKey(r), r);
+			for (const r of merged) ruleMap.set(ruleKey(r), r);
+			result.rewrites = [...ruleMap.values()];
 		}
 	}
 	return result;
 }
 
-/** Load config from global + project, merge with defaults */
 export function loadConfig(cwd: string): RewriterConfig {
 	const globalPath = join(
 		homedir(),

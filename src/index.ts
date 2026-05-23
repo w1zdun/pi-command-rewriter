@@ -1,19 +1,43 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createBashTool } from "@earendil-works/pi-coding-agent";
+import {
+	type ExtensionAPI,
+	isToolCallEventType,
+} from "@earendil-works/pi-coding-agent";
 import { loadConfig, type RewriterConfig } from "./config";
-import { analyzeRewrite, createSpawnHook } from "./rewriter";
+import { analyzeRewrite } from "./rewriter";
 
-// Mutable config holder — always assigned before any handler runs.
 let currentConfig: RewriterConfig;
+let widgetVisible = false;
 
-// Rolling log of rewrites for the current session (most recent last).
 const rewriteLog: string[] = [];
 const MAX_LOG_ENTRIES = 20;
+
+function renderWidget(cfg: RewriterConfig): string[] {
+	const rtkStatus =
+		(cfg.rtkMode ?? "disabled") === "after-rewrite"
+			? "✅ after-rewrite"
+			: "❌ disabled";
+	const lines = (cfg.rewrites ?? []).map((r, i) => {
+		const match = Array.isArray(r.match) ? r.match.join(" | ") : r.match;
+		const status = r.enabled ? "✅ ON " : "❌ OFF";
+		return `  [${i}] ${status} ${match} → ${r.replaceWith}`;
+	});
+	const logSection =
+		rewriteLog.length > 0
+			? ["", "Recent rewrites:", ...rewriteLog.map((e) => `  ${e}`)]
+			: ["", "Recent rewrites: (none this session)"];
+
+	return [
+		`RTK: ${rtkStatus}`,
+		"Active rules:",
+		...lines,
+		`  Total: ${(cfg.rewrites ?? []).length}`,
+		...logSection,
+	];
+}
 
 export default async function (pi: ExtensionAPI) {
 	currentConfig = loadConfig(process.cwd());
 
-	// Always register commands (even when disabled) so reload works.
 	pi.registerCommand("rewriter-reload", {
 		description: "Reload command-rewriter config",
 		handler: async (_args, ctx) => {
@@ -31,71 +55,63 @@ export default async function (pi: ExtensionAPI) {
 	pi.registerCommand("rewriter-status", {
 		description: "Show active rewriter rules and recent rewrites",
 		handler: async (_args, ctx) => {
-			const cfg = currentConfig;
-			const rtkStatus =
-				(cfg.rtkMode ?? "disabled") === "after-rewrite"
-					? "✅ after-rewrite"
-					: "❌ disabled";
-			const lines = (cfg.rewrites ?? []).map((r, i) => {
-				const match = Array.isArray(r.match) ? r.match.join(" | ") : r.match;
-				const status = r.enabled ? "✅ ON " : "❌ OFF";
-				return `  [${i}] ${status} ${match} → ${r.replaceWith}`;
-			});
-
-			const logSection =
-				rewriteLog.length > 0
-					? ["", "Recent rewrites:", ...rewriteLog.map((e) => `  ${e}`)]
-					: ["", "Recent rewrites: (none this session)"];
-
-			const text = [
-				`RTK: ${rtkStatus}`,
-				"Active rules:",
-				...lines,
-				`  Total: ${(cfg.rewrites ?? []).length}`,
-				...logSection,
-			].join("\n");
-			ctx.ui.setWidget("rewriter-status", text.split("\n"));
+			ctx.ui.setWidget("rewriter-status", renderWidget(currentConfig));
+			widgetVisible = true;
 		},
 	});
 
-	if (!currentConfig.enabled) {
-		pi.on("session_start", async (_event, ctx) => {
-			ctx.ui.notify("command-rewriter: disabled in config", "info");
-		});
-		return;
-	}
+	pi.registerCommand("rewriter-widget-toggle", {
+		description: "Show or hide the rewriter widget",
+		handler: async (_args, ctx) => {
+			widgetVisible = !widgetVisible;
+			if (widgetVisible) {
+				ctx.ui.setWidget("rewriter-status", renderWidget(currentConfig));
+				ctx.ui.notify("rewriter widget: shown", "info");
+			} else {
+				ctx.ui.setWidget("rewriter-status", undefined);
+				ctx.ui.notify("rewriter widget: hidden", "info");
+			}
+		},
+	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		if (!currentConfig.enabled) {
+			ctx.ui.notify("command-rewriter: disabled in config", "info");
+			return;
+		}
 		const activeCount = (currentConfig.rewrites ?? []).filter(
 			(r) => r.enabled,
 		).length;
 		ctx.ui.notify(`command-rewriter: ${activeCount} rule(s) active`, "info");
 	});
 
-	// Intercept bash tool calls — analyze the rewrite and surface notices in the TUI.
+	// Rewrite via mutable event.input — the SDK passes the mutated command
+	// to the built-in bash tool, so no custom tool registration is needed.
 	pi.on("tool_call", async (event, ctx) => {
-		if (event.toolName !== "bash") return;
+		if (!isToolCallEventType("bash", event)) return;
+		if (!currentConfig.enabled) return;
 
-		const command = String(event.input.command ?? "");
+		const command = event.input.command;
 		if (!command) return;
 
-		const { notices } = analyzeRewrite(
+		const { ctx: rewritten, notices } = await analyzeRewrite(
 			{ command, cwd: process.cwd(), env: process.env },
 			currentConfig,
 		);
 
+		if (rewritten.command !== command) {
+			event.input.command = rewritten.command;
+		}
+
 		for (const notice of notices) {
 			rewriteLog.push(notice.message);
 			if (rewriteLog.length > MAX_LOG_ENTRIES) rewriteLog.shift();
-
 			ctx.ui.notify(`✏️ ${notice.message}`, "info");
-			ctx.ui.setStatus("rewriter", `✏️ ${notice.message}`);
+		}
+		const last = notices[notices.length - 1];
+		if (last) ctx.ui.setStatus("rewriter", `✏️ ${last.message}`);
+		if (widgetVisible && notices.length > 0) {
+			ctx.ui.setWidget("rewriter-status", renderWidget(currentConfig));
 		}
 	});
-
-	// Spawn hook reads currentConfig each invocation — reload updates take effect immediately.
-	const bashTool = createBashTool(process.cwd(), {
-		spawnHook: (ctx) => createSpawnHook(currentConfig)(ctx),
-	});
-	pi.registerTool({ ...bashTool });
 }

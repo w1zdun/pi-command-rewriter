@@ -96,6 +96,7 @@ If `rtk` is not installed or doesn't know the command, it passes through unchang
 ### Commands
 
 - `/rewriter-status` — show active rules in widget
+- `/rewriter-widget-toggle` — show or hide the widget (auto-refreshes on each rewrite while visible)
 - `/rewriter-reload` — reload config without restarting Pi
 
 ## Credits
