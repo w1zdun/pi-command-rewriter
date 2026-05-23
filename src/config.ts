@@ -47,7 +47,8 @@ function loadJson(path: string): RewriterConfig | undefined {
 	try {
 		if (!existsSync(path)) return undefined;
 		return JSON.parse(readFileSync(path, "utf-8")) as RewriterConfig;
-	} catch {
+	} catch (err) {
+		console.error(`command-rewriter: failed to load ${path}: ${err}`);
 		return undefined;
 	}
 }
@@ -63,13 +64,13 @@ function mergeConfigs(
 		if (cfg.enabled !== undefined) result.enabled = cfg.enabled;
 		if (cfg.rtkMode !== undefined) result.rtkMode = cfg.rtkMode;
 		if (cfg.rewrites) {
-			// Build a map by replaceWith for dedup, preserve order
+			// Build a map by match::replaceWith for dedup, preserve order.
+			// Including replaceWith prevents two rules with the same match
+			// but different replacements from silently colliding.
 			const seen = new Set<string>();
 			const merged: RewriteRule[] = [];
 			for (const rule of cfg.rewrites) {
-				const key = Array.isArray(rule.match)
-					? rule.match.join("|")
-					: rule.match;
+				const key = `${Array.isArray(rule.match) ? rule.match.join("|") : rule.match}::${rule.replaceWith}`;
 				if (!seen.has(key)) {
 					seen.add(key);
 					merged.push(rule);
@@ -79,11 +80,11 @@ function mergeConfigs(
 			const oldRules = result.rewrites ?? [];
 			const oldMap = new Map<string, RewriteRule>();
 			for (const r of oldRules) {
-				const key = Array.isArray(r.match) ? r.match.join("|") : r.match;
+				const key = `${Array.isArray(r.match) ? r.match.join("|") : r.match}::${r.replaceWith}`;
 				oldMap.set(key, r);
 			}
 			for (const r of merged) {
-				const key = Array.isArray(r.match) ? r.match.join("|") : r.match;
+				const key = `${Array.isArray(r.match) ? r.match.join("|") : r.match}::${r.replaceWith}`;
 				oldMap.set(key, r);
 			}
 			result.rewrites = [...oldMap.values()];

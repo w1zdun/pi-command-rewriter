@@ -64,10 +64,10 @@ function findCommandPosition(
 		const after =
 			idx + name.length < source.length ? source[idx + name.length] : undefined;
 
-		const validBefore =
-			before === undefined || /[\s;|&(]/.test(before) || before === "\n";
-		const validAfter =
-			after === undefined || /[\s;|&)]/.test(after) || after === "\n";
+		// Word boundary: reject if adjacent char is alphanumeric or underscore.
+		// Catches cases like "my_python" or "python3.11" matching "python".
+		const validBefore = before === undefined || !/[a-zA-Z0-9_]/.test(before);
+		const validAfter = after === undefined || !/[a-zA-Z0-9_]/.test(after);
 
 		if (validBefore && validAfter) return idx;
 
@@ -88,7 +88,8 @@ export function createSpawnHook(config: RewriterConfig) {
 		if (!config.enabled) return ctx;
 
 		const activeRules = (config.rewrites ?? []).filter((r) => r.enabled);
-		if (activeRules.length === 0) return { ...ctx, command: applyRtk(config, ctx.command) };
+		if (activeRules.length === 0)
+			return { ...ctx, command: applyRtk(config, ctx.command) };
 
 		let ast: Program;
 		try {
@@ -112,11 +113,12 @@ export function createSpawnHook(config: RewriterConfig) {
 			});
 			if (!rule) continue;
 
-			// Find position in source
-			const searchFrom =
-				replacements.length > 0 ? replacements[replacements.length - 1].end : 0;
-			const idx = findCommandPosition(ctx.command, name, searchFrom);
+			// Find position in source (search from 0; dedup below prevents double-replace).
+			const idx = findCommandPosition(ctx.command, name, 0);
 			if (idx === -1) continue;
+
+			// Skip if this position is already covered by a prior replacement.
+			if (replacements.some((r) => idx >= r.start && idx < r.end)) continue;
 
 			// Build replacement text
 			const replacement = rule.replaceWith.replace("$0", name);
@@ -127,9 +129,11 @@ export function createSpawnHook(config: RewriterConfig) {
 			});
 		}
 
-		if (replacements.length === 0) return { ...ctx, command: applyRtk(config, ctx.command) };
+		if (replacements.length === 0)
+			return { ...ctx, command: applyRtk(config, ctx.command) };
 
-		// Apply right-to-left to keep offsets valid
+		// Sort left-to-right, then apply right-to-left to keep offsets valid.
+		replacements.sort((a, b) => a.start - b.start);
 		let result = ctx.command;
 		for (let i = replacements.length - 1; i >= 0; i--) {
 			const r = replacements[i];
@@ -145,8 +149,13 @@ export function createSpawnHook(config: RewriterConfig) {
  *  (exit 1) or is not installed. */
 function applyRtk(config: RewriterConfig, command: string): string {
 	if (config.rtkMode !== "after-rewrite") return command;
+	// Reject commands with null bytes or excessive length (defense-in-depth).
+	if (command.includes("\0") || command.length > 10_000) return command;
 	try {
-		const result = spawnSync("rtk", ["rewrite", command], { encoding: "utf-8" });
+		const result = spawnSync("rtk", ["rewrite", command], {
+			encoding: "utf-8",
+			timeout: 5_000, // Kill hung RTK after 5s
+		});
 		// exit 0 = rewritten + auto-allow, exit 3 = rewritten + ask — both mean use stdout
 		if ((result.status === 0 || result.status === 3) && result.stdout) {
 			return result.stdout.trim();

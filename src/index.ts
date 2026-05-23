@@ -3,34 +3,18 @@ import { createBashTool } from "@earendil-works/pi-coding-agent";
 import { loadConfig, type RewriterConfig } from "./config";
 import { createSpawnHook } from "./rewriter";
 
-let config: RewriterConfig;
+// Mutable config holder — spawn hook reads current value each invocation.
+let currentConfig: RewriterConfig | undefined;
 
 export default async function (pi: ExtensionAPI) {
-	config = loadConfig(process.cwd());
+	currentConfig = loadConfig(process.cwd());
 
-	if (!config.enabled) {
-		pi.on("session_start", async (_event, ctx) => {
-			ctx.ui.notify("command-rewriter: disabled in config", "info");
-		});
-		return;
-	}
-
-	pi.on("session_start", async (_event, ctx) => {
-		const activeCount = (config.rewrites ?? []).filter((r) => r.enabled).length;
-		ctx.ui.notify(`command-rewriter: ${activeCount} rule(s) active`, "info");
-	});
-
-	// Register bash tool with spawn hook
-	const spawnHook = createSpawnHook(config);
-	const bashTool = createBashTool(process.cwd(), { spawnHook });
-	pi.registerTool({ ...bashTool });
-
-	// Reload command
+	// Always register commands (even when disabled) so reload works.
 	pi.registerCommand("rewriter-reload", {
 		description: "Reload command-rewriter config",
 		handler: async (_args, ctx) => {
-			config = loadConfig(ctx.cwd);
-			const activeCount = (config.rewrites ?? []).filter(
+			currentConfig = loadConfig(ctx.cwd);
+			const activeCount = (currentConfig.rewrites ?? []).filter(
 				(r) => r.enabled,
 			).length;
 			ctx.ui.notify(
@@ -40,11 +24,11 @@ export default async function (pi: ExtensionAPI) {
 		},
 	});
 
-	// Settings command
 	pi.registerCommand("rewriter-status", {
 		description: "Show active rewriter rules",
 		handler: async (_args, ctx) => {
-			const lines = (config.rewrites ?? []).map((r, i) => {
+			const cfg = currentConfig;
+			const lines = (cfg.rewrites ?? []).map((r, i) => {
 				const match = Array.isArray(r.match) ? r.match.join(" | ") : r.match;
 				const status = r.enabled ? "✅ ON " : "❌ OFF";
 				return `  [${i}] ${status} ${match} → ${r.replaceWith}`;
@@ -52,9 +36,28 @@ export default async function (pi: ExtensionAPI) {
 			const text = [
 				"Active rules:",
 				...lines,
-				`  Total: ${(config.rewrites ?? []).length}`,
+				`  Total: ${(cfg.rewrites ?? []).length}`,
 			].join("\n");
 			ctx.ui.setWidget("rewriter-status", text.split("\n"));
 		},
 	});
+
+	if (!currentConfig.enabled) {
+		pi.on("session_start", async (_event, ctx) => {
+			ctx.ui.notify("command-rewriter: disabled in config", "info");
+		});
+		return;
+	}
+
+	pi.on("session_start", async (_event, ctx) => {
+		const cfg = currentConfig;
+		const activeCount = (cfg.rewrites ?? []).filter((r) => r.enabled).length;
+		ctx.ui.notify(`command-rewriter: ${activeCount} rule(s) active`, "info");
+	});
+
+	// Spawn hook reads currentConfig each invocation — reload updates take effect immediately.
+	const bashTool = createBashTool(process.cwd(), {
+		spawnHook: (ctx) => createSpawnHook(currentConfig)(ctx),
+	});
+	pi.registerTool({ ...bashTool });
 }
