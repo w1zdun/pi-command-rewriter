@@ -2,6 +2,9 @@
   "name": "pi-command-rewriter",
   "version": "0.1.0",
   "description": "Pi extension - AST-based bash command rewriter with configurable rules",
+  "scripts": {
+    "postinstall": "node scripts/build-aliou-sh.mjs"
+  },
   "dependencies": {
     "@aliou/sh": "github:aliou/sh"
   },
