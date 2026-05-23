@@ -1,0 +1,16 @@
+{
+  "name": "pi-command-rewriter",
+  "version": "0.1.0",
+  "description": "Pi extension - AST-based bash command rewriter with configurable rules",
+  "dependencies": {
+    "@aliou/sh": "github:aliou/sh"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.75.5"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "enabled": true,
+  "rewrites": [
+    {
+      "enabled": true,
+      "match": ["python", "python3"],
+      "replaceWith": "uv run $0"
+    },
+    {
+      "enabled": true,
+      "match": ["pip", "pip3"],
+      "replaceWith": "uv pip"
+    },
+    {
+      "enabled": false,
+      "match": "npm",
+      "replaceWith": "pnpm"
+    },
+    {
+      "enabled": false,
+      "match": "npx",
+      "replaceWith": "pnpm dlx"
+    }
+  ]
+}
