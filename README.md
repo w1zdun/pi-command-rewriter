@@ -54,6 +54,12 @@ Two locations (project overrides global):
       "enabled": true,
       "match": "npx",
       "replaceWith": "pnpm dlx"
+    },
+    {
+      "enabled": true,
+      "match": "kubectl",
+      "replaceWith": "kubectl-readonly",
+      "exceptSubcommands": ["exec"]
     }
   ]
 }
@@ -64,12 +70,13 @@ Two locations (project overrides global):
 - `rewrites[].enabled`: per-rule toggle.
 - `rewrites[].match`: single string or array of command names.
 - `rewrites[].replaceWith`: replacement text. `$0` = matched command name.
+- `rewrites[].exceptSubcommands` (optional): list of literal tokens that, if present anywhere in the argv after the command name, cause the rule to be skipped. Useful for carve-outs like `kubectl exec` while still rewriting `kubectl get`. Tolerates global flags before the subcommand (`kubectl -n ns exec …` is also skipped).
 
 ### How It Works
 
 1. Parses command with `@aliou/sh` (AST, not regex).
 2. Walks all `SimpleCommand` nodes, extracts first word.
-3. Matches against enabled rules, replaces command name in source string (word-boundary aware).
+3. Matches against enabled rules; if a rule defines `exceptSubcommands` and any listed token appears as a literal argument, the rule is skipped and the next eligible rule is tried. Otherwise replaces the command name in the source string (word-boundary aware).
 4. If `rtkMode: "after-rewrite"`, runs `rtk rewrite` on the result — RTK rewrites known commands to their compact equivalents (e.g. `git status` → `rtk git status`). Unknown commands pass through unchanged.
 5. Returns final command to bash tool.
 

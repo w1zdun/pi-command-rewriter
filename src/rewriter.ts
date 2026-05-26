@@ -45,6 +45,19 @@ function getCommandName(cmd: SimpleCommand): string | undefined {
 	return (part as Literal).value;
 }
 
+function getArgLiterals(cmd: SimpleCommand): string[] {
+	const words = cmd.words ?? [];
+	const out: string[] = [];
+	for (let i = 1; i < words.length; i++) {
+		const w = words[i];
+		if (w.parts.length !== 1) continue;
+		const part = w.parts[0];
+		if (part.type !== "Literal") continue;
+		out.push((part as Literal).value);
+	}
+	return out;
+}
+
 function findCommandPosition(
 	source: string,
 	name: string,
@@ -131,9 +144,13 @@ export async function analyzeRewrite(
 				const name = getCommandName(cmd);
 				if (!name) continue;
 
+				const argLiterals = getArgLiterals(cmd);
 				const rule = activeRules.find((r) => {
 					const matches = Array.isArray(r.match) ? r.match : [r.match];
-					return matches.includes(name);
+					if (!matches.includes(name)) return false;
+					if (r.exceptSubcommands?.some((s) => argLiterals.includes(s)))
+						return false;
+					return true;
 				});
 				if (!rule) continue;
 

@@ -8,6 +8,12 @@ export interface RewriteRule {
 	match: string | string[];
 	/** Replacement text. "$0" = matched command name. E.g. "uv run $0" */
 	replaceWith: string;
+	/**
+	 * Skip rewrite when any of these tokens appears as a literal argument.
+	 * Matches anywhere in the argv (after the command name), so global
+	 * flags before the subcommand are tolerated, e.g. `kubectl -n ns exec`.
+	 */
+	exceptSubcommands?: string[];
 }
 
 export interface RewriterConfig {
@@ -42,7 +48,8 @@ const DEFAULT_CONFIG: RewriterConfig = {
  */
 function ruleKey(rule: RewriteRule): string {
 	const match = Array.isArray(rule.match) ? rule.match.join("|") : rule.match;
-	return `${match}::${rule.replaceWith}`;
+	const except = rule.exceptSubcommands?.slice().sort().join(",") ?? "";
+	return `${match}::${rule.replaceWith}::${except}`;
 }
 
 function loadJson(path: string): RewriterConfig | undefined {

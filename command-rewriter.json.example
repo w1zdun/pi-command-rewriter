@@ -21,6 +21,12 @@
       "enabled": false,
       "match": "npx",
       "replaceWith": "pnpm dlx"
+    },
+    {
+      "enabled": false,
+      "match": "kubectl",
+      "replaceWith": "kubectl-readonly",
+      "exceptSubcommands": ["exec"]
     }
   ]
 }
